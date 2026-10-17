@@ -1,0 +1,160 @@
+"""P3 (Clustering): baseline K-Means de perfiles de uso por estación, registrado en MLflow.
+
+Uso: python -m src.train_clustering
+"""
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import mlflow
+import mlflow.sklearn
+import pandas as pd
+from sklearn.cluster import KMeans
+from sklearn.metrics import calinski_harabasz_score, davies_bouldin_score, silhouette_score
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
+
+from config import (
+    FECHA_FIN_TRAIN,
+    FIGURES_DIR,
+    INTERIM_DATA_DIR,
+    RANDOM_STATE,
+    RUTA_CATALOGO_ESTACIONES,
+)
+from src.dataset import cargar_catalogo_amg
+from src.features import construir_perfil_estaciones
+from src.tracking import (
+    configurar_experimento,
+    params_reproducibilidad,
+    tags_run,
+)
+
+K_MIN, K_MAX = 3, 10
+N_INIT = 10
+FEATURES = (
+    [f"prop_hora_{h:02d}" for h in range(24)]
+    + ["prop_fin_de_semana", "prop_salidas", "prop_circulares", "viajes_por_dia", "uso_por_capacidad"]
+)
+
+
+def graficar_mapa(perfil: pd.DataFrame, k: int):
+    fig, ax = plt.subplots(figsize=(8, 8))
+    sc = ax.scatter(
+        perfil["longitude"], perfil["latitude"], c=perfil["cluster_estacion"],
+        cmap="tab10", vmin=0, vmax=9, s=12 + 4 * perfil["viajes_por_dia"] ** 0.5,
+        alpha=0.85, edgecolor="k", linewidth=0.3,
+    )
+    ax.legend(*sc.legend_elements(), title="Cluster", loc="lower left")
+    ax.set_title(f"P3 — Grupos de cicloestaciones MiBici (K-Means, k={k})")
+    ax.set_xlabel("Longitud")
+    ax.set_ylabel("Latitud")
+    ax.set_aspect("equal")
+    return fig
+
+
+def graficar_perfiles_horarios(perfil: pd.DataFrame):
+    cols = [f"prop_hora_{h:02d}" for h in range(24)]
+    medias = perfil.groupby("cluster_estacion")[cols].mean()
+    fig, ax = plt.subplots(figsize=(10, 4.5))
+    for cluster, fila in medias.iterrows():
+        n = (perfil["cluster_estacion"] == cluster).sum()
+        ax.plot(range(24), fila.values, marker="o", ms=3, label=f"Cluster {cluster} (n={n})")
+    ax.set_xticks(range(24))
+    ax.set_xlabel("Hora del día")
+    ax.set_ylabel("Proporción de salidas")
+    ax.set_title("P3 — Perfil horario promedio por cluster")
+    ax.legend()
+    return fig
+
+
+def graficar_curva_k(resultados: pd.DataFrame):
+    fig, ax1 = plt.subplots(figsize=(7, 4))
+    ax1.plot(resultados["k"], resultados["silhouette"], marker="o", color="tab:blue")
+    ax1.set_xlabel("k")
+    ax1.set_ylabel("Silhouette", color="tab:blue")
+    ax2 = ax1.twinx()
+    ax2.plot(resultados["k"], resultados["davies_bouldin"], marker="s", color="tab:red")
+    ax2.set_ylabel("Davies-Bouldin", color="tab:red")
+    ax1.set_title("P3 — Selección de k")
+    return fig
+
+
+def guardar_y_registrar(fig, nombre: str):
+    ruta = FIGURES_DIR / nombre
+    fig.savefig(ruta, dpi=120, bbox_inches="tight")
+    plt.close(fig)
+    mlflow.log_artifact(str(ruta), artifact_path="figuras")
+
+
+def main():
+    ruta = INTERIM_DATA_DIR / "viajes_amg_limpios.parquet"
+    if not ruta.exists():
+        raise FileNotFoundError(f"Primero corre src.dataset para generar {ruta}")
+    FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+
+    perfil = construir_perfil_estaciones(
+        pd.read_parquet(ruta), cargar_catalogo_amg(RUTA_CATALOGO_ESTACIONES), FECHA_FIN_TRAIN
+    )
+    X = StandardScaler().fit_transform(perfil[FEATURES])
+
+    configurar_experimento()
+    with mlflow.start_run(run_name="P3-baseline-kmeans-perfiles-estacion"):
+        mlflow.set_tags(tags_run("P3", "KMeans"))
+        mlflow.log_params(params_reproducibilidad())
+        mlflow.log_params({
+            "periodo_perfil": f"fecha_inicio..{FECHA_FIN_TRAIN}",
+            "features": ",".join(FEATURES),
+            "escalado": "StandardScaler",
+            "k_min": K_MIN,
+            "k_max": K_MAX,
+            "n_init": N_INIT,
+            "criterio_seleccion_k": "max_silhouette",
+            "n_estaciones": len(perfil),
+        })
+
+        filas = []
+        for k in range(K_MIN, K_MAX + 1):
+            etiquetas = KMeans(n_clusters=k, n_init=N_INIT, random_state=RANDOM_STATE).fit_predict(X)
+            fila = {
+                "k": k,
+                "silhouette": silhouette_score(X, etiquetas),
+                "davies_bouldin": davies_bouldin_score(X, etiquetas),
+            }
+            filas.append(fila)
+            mlflow.log_metrics({"silhouette_por_k": fila["silhouette"],
+                                "davies_bouldin_por_k": fila["davies_bouldin"]}, step=k)
+        resultados = pd.DataFrame(filas)
+        k_opt = int(resultados.loc[resultados["silhouette"].idxmax(), "k"])
+
+        modelo = make_pipeline(
+            StandardScaler(), KMeans(n_clusters=k_opt, n_init=N_INIT, random_state=RANDOM_STATE)
+        )
+        perfil["cluster_estacion"] = modelo.fit_predict(perfil[FEATURES])
+        X_opt = modelo[:-1].transform(perfil[FEATURES])
+        etiquetas = perfil["cluster_estacion"]
+        metricas = {
+            "silhouette": float(silhouette_score(X_opt, etiquetas)),
+            "davies_bouldin": float(davies_bouldin_score(X_opt, etiquetas)),
+            "calinski_harabasz": float(calinski_harabasz_score(X_opt, etiquetas)),
+            "inercia": float(modelo[-1].inertia_),
+            "tamano_cluster_min": int(etiquetas.value_counts().min()),
+            "tamano_cluster_max": int(etiquetas.value_counts().max()),
+        }
+        mlflow.log_param("k", k_opt)
+        mlflow.log_metrics(metricas)
+        mlflow.sklearn.log_model(modelo, name="modelo")
+
+        guardar_y_registrar(graficar_mapa(perfil, k_opt), "P3_mapa_clusters.png")
+        guardar_y_registrar(graficar_perfiles_horarios(perfil), "P3_perfiles_horarios.png")
+        guardar_y_registrar(graficar_curva_k(resultados), "P3_seleccion_k.png")
+
+        asignacion = perfil[["id", "name", "latitude", "longitude", "dpcapacity",
+                             "viajes_por_dia", "cluster_estacion"]]
+        mlflow.log_table(asignacion, artifact_file="tablas/asignacion_clusters.json")
+        mlflow.log_table(resultados, artifact_file="tablas/seleccion_k.json")
+
+        print(f"P3 k={k_opt}: {metricas}")
+
+
+if __name__ == "__main__":
+    main()

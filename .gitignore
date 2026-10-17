@@ -10,6 +10,10 @@ mlflow.db
 mlruns/
 mlartifacts/
 
+# --- Figuras generadas por los scripts (se guardan como artefactos en MLflow) ---
+/reports/figures/*
+!/reports/figures/.gitkeep
+
 # --- Secretos y variables de entorno ---
 .env
 .env.*
