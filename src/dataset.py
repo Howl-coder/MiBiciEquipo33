@@ -1,10 +1,21 @@
+"""Ingesta, versionado y limpieza de los viajes MiBici.
+
+Uso:
+    python -m src.dataset                          # verifica datos contra el manifiesto y procesa
+    python -m src.dataset --actualizar-manifiesto  # registra una nueva versión de los datos crudos
+"""
+import argparse
 import gc
+import hashlib
+import json
 from pathlib import Path
 import pandas as pd
 from config import (
     ARCHIVOS_VIAJES_RAW,
     RUTA_CATALOGO_ESTACIONES,
+    RUTA_MANIFIESTO_DATOS,
     INTERIM_DATA_DIR,
+    DATA_VERSION,
     FECHA_INICIO,
     FECHA_FIN,
     DURACION_MIN_MINUTOS,
@@ -14,6 +25,72 @@ from config import (
     LON_MIN,
     LON_MAX,
 )
+
+ARCHIVOS_CRUDOS = [*ARCHIVOS_VIAJES_RAW, RUTA_CATALOGO_ESTACIONES]
+
+
+def sha256_archivo(ruta: Path) -> str:
+    h = hashlib.sha256()
+    with open(ruta, "rb") as f:
+        for bloque in iter(lambda: f.read(1 << 20), b""):
+            h.update(bloque)
+    return h.hexdigest()
+
+
+def generar_manifiesto(archivos: list) -> dict:
+    """Calcula tamaño y SHA-256 de cada archivo crudo y un hash global de la versión."""
+    faltantes = [str(p) for p in archivos if not p.exists()]
+    if faltantes:
+        raise FileNotFoundError(f"Faltan archivos crudos en data/raw/: {faltantes}")
+
+    entradas = [
+        {"archivo": p.name, "bytes": p.stat().st_size, "sha256": sha256_archivo(p)}
+        for p in archivos
+    ]
+    huella = "\n".join(f"{e['archivo']}  {e['sha256']}" for e in entradas)
+    return {
+        "version": DATA_VERSION,
+        "sha256_global": hashlib.sha256(huella.encode()).hexdigest(),
+        "archivos": entradas,
+    }
+
+
+def cargar_manifiesto() -> dict:
+    with open(RUTA_MANIFIESTO_DATOS, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def guardar_manifiesto(manifiesto: dict) -> None:
+    RUTA_MANIFIESTO_DATOS.parent.mkdir(parents=True, exist_ok=True)
+    with open(RUTA_MANIFIESTO_DATOS, "w", encoding="utf-8") as f:
+        json.dump(manifiesto, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+
+
+def verificar_datos_crudos(actualizar: bool = False) -> dict:
+    """Compara los CSV locales contra el manifiesto versionado y devuelve el manifiesto vigente.
+
+    Si no existe manifiesto, o si actualizar=True, se registra la versión actual de los datos.
+    Si los archivos difieren del manifiesto, se detiene para no mezclar versiones sin querer.
+    """
+    actual = generar_manifiesto(ARCHIVOS_CRUDOS)
+    if actualizar or not RUTA_MANIFIESTO_DATOS.exists():
+        guardar_manifiesto(actual)
+        print(f"Manifiesto registrado: {RUTA_MANIFIESTO_DATOS} ({actual['sha256_global'][:16]})")
+        return actual
+
+    registrado = cargar_manifiesto()
+    if registrado["sha256_global"] != actual["sha256_global"]:
+        esperados = {e["archivo"]: e["sha256"] for e in registrado["archivos"]}
+        distintos = [e["archivo"] for e in actual["archivos"] if esperados.get(e["archivo"]) != e["sha256"]]
+        raise ValueError(
+            f"Los datos crudos no coinciden con {RUTA_MANIFIESTO_DATOS.name} "
+            f"(archivos distintos: {distintos}). Si es una nueva versión intencional, "
+            "ejecuta: python -m src.dataset --actualizar-manifiesto"
+        )
+    print(f"Datos crudos verificados: {registrado['version']} ({registrado['sha256_global'][:16]})")
+    return registrado
+
 
 def cargar_catalogo_amg(ruta_estaciones: Path) -> pd.DataFrame:
     """Carga y filtra estaciones estrictamente dentro del polígono AMG."""
@@ -111,4 +188,10 @@ def procesar_e_integrar_datos(archivos: list, ruta_estaciones: Path) -> pd.DataF
     return df
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--actualizar-manifiesto", action="store_true",
+                        help="Registra los CSV actuales como nueva versión de los datos crudos.")
+    args = parser.parse_args()
+
+    verificar_datos_crudos(actualizar=args.actualizar_manifiesto)
     procesar_e_integrar_datos(ARCHIVOS_VIAJES_RAW, RUTA_CATALOGO_ESTACIONES)
