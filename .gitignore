@@ -1,0 +1,51 @@
+# --- Datos (se versionan con el manifiesto SHA-256, no con Git) ---
+/data/
+
+# --- Modelos entrenados (se registran en MLflow); conservar la carpeta ---
+/models/*
+!/models/.gitkeep
+
+# --- MLflow ---
+mlflow.db
+mlruns/
+mlartifacts/
+
+# --- Figuras generadas por los scripts (se guardan como artefactos en MLflow) ---
+/reports/figures/*
+!/reports/figures/.gitkeep
+
+# --- Secretos y variables de entorno ---
+.env
+.env.*
+
+# --- Entornos virtuales ---
+.venv*/
+venv/
+env/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+
+# --- Herramientas ---
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# --- Sistema operativo / editores ---
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+.vscode/
+.idea/
+
+# --- Temporales de Office (al tener abiertos los .docx) ---
+~$*
