@@ -20,7 +20,18 @@ ARCHIVOS_VIAJES_RAW = [
 ]
 
 # Archivo de catálogo de estaciones
-RUTA_CATALOGO_ESTACIONES = RAW_DATA_DIR / "nomenclatura_2026_09.csv"  # Ajusta si tu archivo se llama nomenclatura.csv
+RUTA_CATALOGO_ESTACIONES = RAW_DATA_DIR / "nomenclatura_2026_09.csv"
+
+# URLs de descarga del portal de datos abiertos de MiBici
+URLS_VIAJES_RAW = {
+    "datos_abiertos_2026_04.csv": "https://www.mibici.net/site/assets/files/124927/datos_abiertos_2026_04.csv",
+    "datos_abiertos_2026_05.csv": "https://www.mibici.net/site/assets/files/125943/datos_abiertos_2026_05.csv",
+    "datos_abiertos_2026_06.csv": "https://www.mibici.net/site/assets/files/127734/datos_abiertos_2026_06.csv",
+    "datos_abiertos_2026_07.csv": "https://www.mibici.net/site/assets/files/129006/datos_abiertos_2026_07.csv",
+    "datos_abiertos_2026_08.csv": "https://www.mibici.net/site/assets/files/130362/datos_abiertos_2026_08.csv",
+    "datos_abiertos_2026_09.csv": "https://www.mibici.net/site/assets/files/131825/datos_abiertos_2026_09.csv",
+}
+URL_CATALOGO_ESTACIONES = "https://www.mibici.net/site/assets/files/1118/nomenclatura_2026_09.csv"
 
 # Manifiesto versionado en Git con el SHA-256 de cada archivo crudo
 RUTA_MANIFIESTO_DATOS = BASE_DIR / "references" / "manifiesto_datos.json"
