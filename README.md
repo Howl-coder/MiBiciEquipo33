@@ -30,7 +30,7 @@ El planteamiento completo está en el [ML Canvas](references/ml_canvas_v1.2.docx
 
 ### Versionado de datos
 
-[references/manifiesto_datos.json](references/manifiesto_datos.json), que sí está en Git, guarda el tamaño y el SHA-256 de cada archivo crudo y un hash global de la versión (`data_version` = `mibici-datos-abiertos-2026_04-2026_09`).
+[references/manifiesto_datos.json](references/manifiesto_datos.json), que sí está en Git, guarda el número de registros, el tamaño y el SHA-256 de cada archivo crudo, además de un hash global de la versión (`data_version` = `mibici-datos-abiertos-2026_04-2026_09`).
 
 - `python -m src.dataset` compara los CSV locales contra el manifiesto y **se detiene si no coinciden**, indicando qué archivo cambió.
 - Cada run de MLflow verifica los datos otra vez y registra `data_version` y `data_sha256`.

@@ -56,9 +56,25 @@ def descargar_datos_crudos(forzar: bool = False) -> None:
             print(f"Ya existe, omitiendo: {nombre}")
             continue
         print(f"Descargando {nombre} ...")
-        with urllib.request.urlopen(url) as respuesta, open(destino, "wb") as archivo:
-            while bloque := respuesta.read(1 << 20):
-                archivo.write(bloque)
+        solicitud = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": (
+                    "MiBiciEquipo33/1.0 "
+                    "(+https://github.com/Howl-coder/MiBiciEquipo33)"
+                ),
+                "Accept": "text/csv,*/*",
+            },
+        )
+        temporal = destino.with_name(f"{destino.name}.part")
+        try:
+            with urllib.request.urlopen(solicitud, timeout=60) as respuesta:
+                with open(temporal, "wb") as archivo:
+                    while bloque := respuesta.read(1 << 20):
+                        archivo.write(bloque)
+            temporal.replace(destino)
+        finally:
+            temporal.unlink(missing_ok=True)
         print(f"  -> {destino.stat().st_size / 1e6:.1f} MB")
 
 
@@ -70,14 +86,33 @@ def sha256_archivo(ruta: Path) -> str:
     return h.hexdigest()
 
 
+def contar_registros_csv(ruta: Path) -> int:
+    """Cuenta las filas de datos de un CSV por bloques, sin incluir el encabezado."""
+    try:
+        return sum(
+            len(bloque)
+            for bloque in pd.read_csv(ruta, encoding="utf-8", chunksize=100_000)
+        )
+    except UnicodeDecodeError:
+        return sum(
+            len(bloque)
+            for bloque in pd.read_csv(ruta, encoding="latin-1", chunksize=100_000)
+        )
+
+
 def generar_manifiesto(archivos: list) -> dict:
-    """Calcula tamaño y SHA-256 de cada archivo crudo y un hash global de la versión."""
+    """Calcula filas, tamaño y SHA-256 de cada archivo crudo y un hash global."""
     faltantes = [str(p) for p in archivos if not p.exists()]
     if faltantes:
         raise FileNotFoundError(f"Faltan archivos crudos en data/raw/: {faltantes}")
 
     entradas = [
-        {"archivo": p.name, "bytes": p.stat().st_size, "sha256": sha256_archivo(p)}
+        {
+            "archivo": p.name,
+            "registros": contar_registros_csv(p),
+            "bytes": p.stat().st_size,
+            "sha256": sha256_archivo(p),
+        }
         for p in archivos
     ]
     huella = "\n".join(f"{e['archivo']}  {e['sha256']}" for e in entradas)
