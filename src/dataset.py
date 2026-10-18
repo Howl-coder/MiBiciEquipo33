@@ -1,13 +1,15 @@
 """Ingesta, versionado y limpieza de los viajes MiBici.
 
 Uso:
-    python -m src.dataset                          # verifica datos contra el manifiesto y procesa
+    python -m src.dataset                          # descarga si faltan, verifica y procesa
     python -m src.dataset --actualizar-manifiesto  # registra una nueva versión de los datos crudos
+    python -m src.dataset --forzar-descarga        # re-descarga aunque los archivos ya existan
 """
 import argparse
 import gc
 import hashlib
 import json
+import urllib.request
 from pathlib import Path
 import pandas as pd
 from config import (
@@ -15,6 +17,7 @@ from config import (
     RUTA_CATALOGO_ESTACIONES,
     RUTA_MANIFIESTO_DATOS,
     INTERIM_DATA_DIR,
+    RAW_DATA_DIR,
     DATA_VERSION,
     FECHA_INICIO,
     FECHA_FIN,
@@ -24,9 +27,39 @@ from config import (
     LAT_MAX,
     LON_MIN,
     LON_MAX,
+    URLS_VIAJES_RAW,
+    URL_CATALOGO_ESTACIONES,
 )
 
 ARCHIVOS_CRUDOS = [*ARCHIVOS_VIAJES_RAW, RUTA_CATALOGO_ESTACIONES]
+
+
+def descargar_datos_crudos(forzar: bool = False) -> None:
+    """Descarga los CSV mensuales de viajes y la nomenclatura de estaciones desde el portal MiBici.
+
+    Usa streaming por bloques para no cargar cada archivo en RAM. Si el archivo
+    ya existe y forzar=False, se omite para no repetir descargas innecesarias.
+
+    Args:
+        forzar: si True, re-descarga aunque los archivos ya existan localmente.
+    """
+    RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    descargas = {
+        **URLS_VIAJES_RAW,
+        RUTA_CATALOGO_ESTACIONES.name: URL_CATALOGO_ESTACIONES,
+    }
+
+    for nombre, url in descargas.items():
+        destino = RAW_DATA_DIR / nombre
+        if destino.exists() and not forzar:
+            print(f"Ya existe, omitiendo: {nombre}")
+            continue
+        print(f"Descargando {nombre} ...")
+        with urllib.request.urlopen(url) as respuesta, open(destino, "wb") as archivo:
+            while bloque := respuesta.read(1 << 20):
+                archivo.write(bloque)
+        print(f"  -> {destino.stat().st_size / 1e6:.1f} MB")
 
 
 def sha256_archivo(ruta: Path) -> str:
@@ -191,7 +224,16 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--actualizar-manifiesto", action="store_true",
                         help="Registra los CSV actuales como nueva versión de los datos crudos.")
+    parser.add_argument("--forzar-descarga", action="store_true",
+                        help="Re-descarga los CSV aunque ya existan en data/raw/.")
     args = parser.parse_args()
+
+    archivos_faltantes = [p for p in ARCHIVOS_CRUDOS if not p.exists()]
+    if archivos_faltantes:
+        print(f"Faltan {len(archivos_faltantes)} archivo(s) en data/raw/. Iniciando descarga...")
+        descargar_datos_crudos(forzar=args.forzar_descarga)
+    elif args.forzar_descarga:
+        descargar_datos_crudos(forzar=True)
 
     verificar_datos_crudos(actualizar=args.actualizar_manifiesto)
     procesar_e_integrar_datos(ARCHIVOS_VIAJES_RAW, RUTA_CATALOGO_ESTACIONES)

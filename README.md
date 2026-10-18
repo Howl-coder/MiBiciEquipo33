@@ -4,10 +4,12 @@ Pipeline reproducible de Machine Learning para pronosticar la demanda, detectar 
 
 ## Equipo 33
 
-- Leonardo Contreras Palomino
-- Sofía Donlucas Bañuelos
-- Gerardo Duarte Ceballos
-- Alejandro Gutiérrez Saldaña
+| Integrante | Rol |
+|---|---|
+| Leonardo Contreras Palomino | Análisis exploratorio y validación de modelos |
+| Sofía Donlucas Bañuelos | Ingesta de datos y reproducibilidad |
+| Gerardo Duarte Ceballos | Configuración del repositorio e integración |
+| Alejandro Gutiérrez Saldaña | Feature engineering y experimentos MLflow |
 
 ## Preguntas del proyecto
 
@@ -76,13 +78,15 @@ Requiere Python 3.12. Los comandos son para PowerShell; en Git Bash activa el en
 git clone https://github.com/Howl-coder/MiBiciEquipo33.git
 cd MiBiciEquipo33
 
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+# macOS / Linux
+python -m venv .venv && source .venv/bin/activate
+
+# Windows (PowerShell)
+# python -m venv .venv && .\.venv\Scripts\Activate.ps1
+
 pip install -r requirements.txt
 
-# Copiar los 7 CSV del portal de datos abiertos a data/raw/
-
-python -m src.dataset              # 1. Verifica la versión de los datos y limpia -> data/interim/
+python -m src.dataset              # 1. Descarga CSVs si faltan, verifica versión y limpia -> data/interim/
 python -m src.features             # 2. Malla horaria y variables -> data/processed/
 python -m src.train_regresion      # 3. P1
 python -m src.train_clasificacion  #    P2
