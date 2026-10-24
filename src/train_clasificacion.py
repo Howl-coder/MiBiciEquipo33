@@ -27,6 +27,7 @@ from sklearn.preprocessing import StandardScaler
 from config import (
     FECHA_INICIO_TEST,
     FIGURES_DIR,
+    HIPERPARAMS_POR_DEFECTO,
     PROCESSED_DATA_DIR,
     RANDOM_STATE,
     RUTA_CATALOGO_ESTACIONES,
@@ -50,6 +51,12 @@ FEATURES = [
     "demanda_salidas", "flujo_llegadas", "lag_salidas_1h", "lag_salidas_24h",
     "lag_salidas_168h", "rolling_mean_6h",
 ]
+MODELOS = {
+    "logreg": ("LogisticRegression", lambda hp: make_pipeline(
+        StandardScaler(), LogisticRegression(**hp, random_state=RANDOM_STATE))),
+    "histgb": ("HistGradientBoostingClassifier",
+               lambda hp: HistGradientBoostingClassifier(**hp, random_state=RANDOM_STATE)),
+}
 
 
 def metricas_clasificacion(y_true, y_proba) -> dict:
@@ -113,7 +120,8 @@ def ejecutar_run(nombre_run, tipo_modelo, modelo, hiperparams, train, test, para
         print(f"{nombre_run}: {metricas}")
 
 
-def main():
+def cargar_datos():
+    """Devuelve ``(train, test)`` con el target de P2 y la partición temporal de ``config``."""
     ruta = PROCESSED_DATA_DIR / "features_demanda_p1.parquet"
     if not ruta.exists():
         raise FileNotFoundError(f"Primero corre src.dataset y src.features para generar {ruta}")
@@ -126,24 +134,24 @@ def main():
         UMBRAL_FRACCION_CAPACIDAD,
     )
     corte = pd.Timestamp(FECHA_INICIO_TEST)
-    train = df[df["timestamp_hora"] < corte]
-    test = df[df["timestamp_hora"] >= corte]
+    return df[df["timestamp_hora"] < corte], df[df["timestamp_hora"] >= corte]
 
+
+def entrenar(modelo: str, hiperparams: dict, datos, params_base: dict) -> None:
+    """Registra un run de P2; ``modelo`` es una clave de ``MODELOS``."""
+    train, test = datos
+    tipo_modelo, construir = MODELOS[modelo]
+    ejecutar_run(f"P2-baseline-{modelo}", tipo_modelo, construir(hiperparams), hiperparams,
+                 train, test, params_base)
+
+
+def main():
+    datos = cargar_datos()
     configurar_experimento()
     params_base = params_reproducibilidad()
 
-    hp_logreg = {"C": 1.0, "class_weight": "balanced", "max_iter": 1000}
-    ejecutar_run(
-        "P2-baseline-logistic-regression", "LogisticRegression",
-        make_pipeline(StandardScaler(), LogisticRegression(**hp_logreg, random_state=RANDOM_STATE)),
-        hp_logreg, train, test, params_base,
-    )
-    hp_hgb = {"max_iter": 200, "learning_rate": 0.1, "max_depth": None, "class_weight": "balanced"}
-    ejecutar_run(
-        "P2-baseline-histgb-classifier", "HistGradientBoostingClassifier",
-        HistGradientBoostingClassifier(**hp_hgb, random_state=RANDOM_STATE),
-        hp_hgb, train, test, params_base,
-    )
+    for modelo, hiperparams in HIPERPARAMS_POR_DEFECTO["p2"].items():
+        entrenar(modelo, hiperparams, datos, params_base)
 
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@ from sklearn.preprocessing import StandardScaler
 from config import (
     FECHA_FIN_TRAIN,
     FIGURES_DIR,
+    HIPERPARAMS_POR_DEFECTO,
     INTERIM_DATA_DIR,
     RANDOM_STATE,
     RUTA_CATALOGO_ESTACIONES,
@@ -29,8 +30,6 @@ from src.tracking import (
     tags_run,
 )
 
-K_MIN, K_MAX = 3, 10
-N_INIT = 10
 FEATURES = (
     [f"prop_hora_{h:02d}" for h in range(24)]
     + ["prop_fin_de_semana", "prop_salidas", "prop_circulares", "viajes_por_dia", "uso_por_capacidad"]
@@ -86,35 +85,40 @@ def guardar_y_registrar(fig, nombre: str):
     mlflow.log_artifact(str(ruta), artifact_path="figuras")
 
 
-def main():
+def cargar_datos() -> pd.DataFrame:
+    """Devuelve el perfil de cada estación calculado solo con el periodo de entrenamiento."""
     ruta = INTERIM_DATA_DIR / "viajes_amg_limpios.parquet"
     if not ruta.exists():
         raise FileNotFoundError(f"Primero corre src.dataset para generar {ruta}")
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 
-    perfil = construir_perfil_estaciones(
+    return construir_perfil_estaciones(
         pd.read_parquet(ruta), cargar_catalogo_amg(RUTA_CATALOGO_ESTACIONES), FECHA_FIN_TRAIN
     )
+
+
+def entrenar(modelo: str, hiperparams: dict, perfil: pd.DataFrame, params_base: dict) -> None:
+    """Registra el run de P3: elige k en ``[k_min, k_max]`` por silhouette y ajusta K-Means."""
+    k_min, k_max, n_init = hiperparams["k_min"], hiperparams["k_max"], hiperparams["n_init"]
     X = StandardScaler().fit_transform(perfil[FEATURES])
 
-    configurar_experimento()
-    with mlflow.start_run(run_name="P3-baseline-kmeans-perfiles-estacion"):
+    with mlflow.start_run(run_name=f"P3-baseline-{modelo}"):
         mlflow.set_tags(tags_run("P3", "KMeans"))
-        mlflow.log_params(params_reproducibilidad())
+        mlflow.log_params(params_base)
         mlflow.log_params({
             "periodo_perfil": f"fecha_inicio..{FECHA_FIN_TRAIN}",
             "features": ",".join(FEATURES),
             "escalado": "StandardScaler",
-            "k_min": K_MIN,
-            "k_max": K_MAX,
-            "n_init": N_INIT,
+            "k_min": k_min,
+            "k_max": k_max,
+            "n_init": n_init,
             "criterio_seleccion_k": "max_silhouette",
             "n_estaciones": len(perfil),
         })
 
         filas = []
-        for k in range(K_MIN, K_MAX + 1):
-            etiquetas = KMeans(n_clusters=k, n_init=N_INIT, random_state=RANDOM_STATE).fit_predict(X)
+        for k in range(k_min, k_max + 1):
+            etiquetas = KMeans(n_clusters=k, n_init=n_init, random_state=RANDOM_STATE).fit_predict(X)
             fila = {
                 "k": k,
                 "silhouette": silhouette_score(X, etiquetas),
@@ -127,7 +131,7 @@ def main():
         k_opt = int(resultados.loc[resultados["silhouette"].idxmax(), "k"])
 
         modelo = make_pipeline(
-            StandardScaler(), KMeans(n_clusters=k_opt, n_init=N_INIT, random_state=RANDOM_STATE)
+            StandardScaler(), KMeans(n_clusters=k_opt, n_init=n_init, random_state=RANDOM_STATE)
         )
         perfil["cluster_estacion"] = modelo.fit_predict(perfil[FEATURES])
         X_opt = modelo[:-1].transform(perfil[FEATURES])
@@ -154,6 +158,12 @@ def main():
         mlflow.log_table(resultados, artifact_file="tablas/seleccion_k.json")
 
         print(f"P3 k={k_opt}: {metricas}")
+
+
+def main():
+    perfil = cargar_datos()
+    configurar_experimento()
+    entrenar("kmeans", HIPERPARAMS_POR_DEFECTO["p3"]["kmeans"], perfil, params_reproducibilidad())
 
 
 if __name__ == "__main__":
