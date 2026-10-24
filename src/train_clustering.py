@@ -7,24 +7,29 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import mlflow
+import mlflow.data
 import mlflow.sklearn
 import pandas as pd
+from mlflow.models import infer_signature
 from sklearn.cluster import KMeans
 from sklearn.metrics import calinski_harabasz_score, davies_bouldin_score, silhouette_score
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
 from config import (
+    BASE_DIR,
     FECHA_FIN_TRAIN,
     FIGURES_DIR,
     HIPERPARAMS_POR_DEFECTO,
     INTERIM_DATA_DIR,
     RANDOM_STATE,
     RUTA_CATALOGO_ESTACIONES,
+    RUTA_MANIFIESTO_DATOS,
 )
 from src.dataset import cargar_catalogo_amg
 from src.features import construir_perfil_estaciones
 from src.tracking import (
+    SKOPS_TIPOS_CONFIABLES,
     configurar_experimento,
     params_reproducibilidad,
     tags_run,
@@ -97,13 +102,13 @@ def cargar_datos() -> pd.DataFrame:
     )
 
 
-def entrenar(modelo: str, hiperparams: dict, perfil: pd.DataFrame, params_base: dict) -> None:
+def entrenar(nombre_modelo: str, hiperparams: dict, perfil: pd.DataFrame, params_base: dict, stage: str = "baseline", nested: bool = False) -> dict:
     """Registra el run de P3: elige k en ``[k_min, k_max]`` por silhouette y ajusta K-Means."""
     k_min, k_max, n_init = hiperparams["k_min"], hiperparams["k_max"], hiperparams["n_init"]
     X = StandardScaler().fit_transform(perfil[FEATURES])
 
-    with mlflow.start_run(run_name=f"P3-baseline-{modelo}"):
-        mlflow.set_tags(tags_run("P3", "KMeans"))
+    with mlflow.start_run(run_name=f"P3-baseline-{nombre_modelo}", nested=nested):
+        mlflow.set_tags(tags_run("P3", "KMeans", stage=stage))
         mlflow.log_params(params_base)
         mlflow.log_params({
             "periodo_perfil": f"fecha_inicio..{FECHA_FIN_TRAIN}",
@@ -130,23 +135,38 @@ def entrenar(modelo: str, hiperparams: dict, perfil: pd.DataFrame, params_base: 
         resultados = pd.DataFrame(filas)
         k_opt = int(resultados.loc[resultados["silhouette"].idxmax(), "k"])
 
-        modelo = make_pipeline(
+        pipeline = make_pipeline(
             StandardScaler(), KMeans(n_clusters=k_opt, n_init=n_init, random_state=RANDOM_STATE)
         )
-        perfil["cluster_estacion"] = modelo.fit_predict(perfil[FEATURES])
-        X_opt = modelo[:-1].transform(perfil[FEATURES])
+        perfil = perfil.copy()
+        perfil["cluster_estacion"] = pipeline.fit_predict(perfil[FEATURES])
+        X_opt = pipeline[:-1].transform(perfil[FEATURES])
         etiquetas = perfil["cluster_estacion"]
         metricas = {
             "silhouette": float(silhouette_score(X_opt, etiquetas)),
             "davies_bouldin": float(davies_bouldin_score(X_opt, etiquetas)),
             "calinski_harabasz": float(calinski_harabasz_score(X_opt, etiquetas)),
-            "inercia": float(modelo[-1].inertia_),
+            "inercia": float(pipeline[-1].inertia_),
             "tamano_cluster_min": int(etiquetas.value_counts().min()),
             "tamano_cluster_max": int(etiquetas.value_counts().max()),
         }
         mlflow.log_param("k", k_opt)
         mlflow.log_metrics(metricas)
-        mlflow.sklearn.log_model(modelo, name="modelo")
+
+        signature = infer_signature(perfil[FEATURES], pipeline.predict(perfil[FEATURES]))
+        mlflow.sklearn.log_model(
+            pipeline, name="modelo",
+            signature=signature,
+            input_example=perfil[FEATURES].iloc[:3],
+            skops_trusted_types=SKOPS_TIPOS_CONFIABLES,
+        )
+
+        dataset_perfil = mlflow.data.from_pandas(
+            perfil[FEATURES],
+            source=str(INTERIM_DATA_DIR / "viajes_amg_limpios.parquet"),
+            name="mibici-perfiles-p3",
+        )
+        mlflow.log_input(dataset_perfil, context="training")
 
         guardar_y_registrar(graficar_mapa(perfil, k_opt), "P3_mapa_clusters.png")
         guardar_y_registrar(graficar_perfiles_horarios(perfil), "P3_perfiles_horarios.png")
@@ -157,7 +177,11 @@ def entrenar(modelo: str, hiperparams: dict, perfil: pd.DataFrame, params_base: 
         mlflow.log_table(asignacion, artifact_file="tablas/asignacion_clusters.json")
         mlflow.log_table(resultados, artifact_file="tablas/seleccion_k.json")
 
+        mlflow.log_artifact(str(RUTA_MANIFIESTO_DATOS), artifact_path="datos")
+        mlflow.log_artifact(str(BASE_DIR / "config.py"), artifact_path="config")
+
         print(f"P3 k={k_opt}: {metricas}")
+    return metricas
 
 
 def main():

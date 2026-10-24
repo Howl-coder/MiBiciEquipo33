@@ -7,8 +7,10 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import mlflow
+import mlflow.data
 import mlflow.sklearn
 import pandas as pd
+from mlflow.models import infer_signature
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
@@ -25,12 +27,14 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
 from config import (
+    BASE_DIR,
     FECHA_INICIO_TEST,
     FIGURES_DIR,
     HIPERPARAMS_POR_DEFECTO,
     PROCESSED_DATA_DIR,
     RANDOM_STATE,
     RUTA_CATALOGO_ESTACIONES,
+    RUTA_MANIFIESTO_DATOS,
 )
 from src.dataset import cargar_catalogo_amg
 from src.features import agregar_features_y_target_desbalance
@@ -85,9 +89,9 @@ def graficar_evaluacion(y_true, y_proba, nombre: str):
     return fig
 
 
-def ejecutar_run(nombre_run, tipo_modelo, modelo, hiperparams, train, test, params_base):
-    with mlflow.start_run(run_name=nombre_run):
-        mlflow.set_tags(tags_run("P2", tipo_modelo))
+def ejecutar_run(nombre_run, tipo_modelo, modelo, hiperparams, train, test, params_base, stage="baseline", nested=False) -> dict:
+    with mlflow.start_run(run_name=nombre_run, nested=nested):
+        mlflow.set_tags(tags_run("P2", tipo_modelo, stage=stage))
         mlflow.log_params(params_base)
         mlflow.log_params({
             "target": TARGET,
@@ -109,7 +113,22 @@ def ejecutar_run(nombre_run, tipo_modelo, modelo, hiperparams, train, test, para
         y_proba = modelo.predict_proba(test[FEATURES])[:, 1]
         metricas = {f"test_{k}": v for k, v in metricas_clasificacion(test[TARGET], y_proba).items()}
         mlflow.log_metrics(metricas)
-        mlflow.sklearn.log_model(modelo, name="modelo", skops_trusted_types=SKOPS_TIPOS_CONFIABLES)
+
+        signature = infer_signature(train[FEATURES], modelo.predict_proba(train[FEATURES]))
+        mlflow.sklearn.log_model(
+            modelo, name="modelo",
+            signature=signature,
+            input_example=train[FEATURES].iloc[:3],
+            skops_trusted_types=SKOPS_TIPOS_CONFIABLES,
+        )
+
+        dataset_train = mlflow.data.from_pandas(
+            train[FEATURES + [TARGET]],
+            source=str(PROCESSED_DATA_DIR / "features_demanda_p1.parquet"),
+            name="mibici-train-p2",
+            targets=TARGET,
+        )
+        mlflow.log_input(dataset_train, context="training")
 
         fig = graficar_evaluacion(test[TARGET], y_proba, nombre_run)
         ruta_fig = FIGURES_DIR / f"{nombre_run}_evaluacion.png"
@@ -117,7 +136,11 @@ def ejecutar_run(nombre_run, tipo_modelo, modelo, hiperparams, train, test, para
         plt.close(fig)
         mlflow.log_artifact(str(ruta_fig), artifact_path="figuras")
 
+        mlflow.log_artifact(str(RUTA_MANIFIESTO_DATOS), artifact_path="datos")
+        mlflow.log_artifact(str(BASE_DIR / "config.py"), artifact_path="config")
+
         print(f"{nombre_run}: {metricas}")
+    return metricas
 
 
 def cargar_datos():
@@ -137,12 +160,14 @@ def cargar_datos():
     return df[df["timestamp_hora"] < corte], df[df["timestamp_hora"] >= corte]
 
 
-def entrenar(modelo: str, hiperparams: dict, datos, params_base: dict) -> None:
+def entrenar(modelo: str, hiperparams: dict, datos, params_base: dict, stage: str = "baseline", nested: bool = False) -> dict:
     """Registra un run de P2; ``modelo`` es una clave de ``MODELOS``."""
     train, test = datos
     tipo_modelo, construir = MODELOS[modelo]
-    ejecutar_run(f"P2-baseline-{modelo}", tipo_modelo, construir(hiperparams), hiperparams,
-                 train, test, params_base)
+    return ejecutar_run(
+        f"P2-baseline-{modelo}", tipo_modelo, construir(hiperparams), hiperparams,
+        train, test, params_base, stage=stage, nested=nested,
+    )
 
 
 def main():
