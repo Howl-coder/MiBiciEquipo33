@@ -13,7 +13,13 @@ import pandas as pd
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
-from config import FECHA_INICIO_TEST, FIGURES_DIR, PROCESSED_DATA_DIR, RANDOM_STATE
+from config import (
+    FECHA_INICIO_TEST,
+    FIGURES_DIR,
+    HIPERPARAMS_POR_DEFECTO,
+    PROCESSED_DATA_DIR,
+    RANDOM_STATE,
+)
 from src.tracking import (
     SKOPS_TIPOS_CONFIABLES,
     configurar_experimento,
@@ -27,12 +33,7 @@ FEATURES = [
     "lag_salidas_1h", "lag_salidas_2h", "lag_salidas_3h",
     "lag_salidas_24h", "lag_salidas_168h", "rolling_mean_6h",
 ]
-HIPERPARAMS_HGB = {
-    "max_iter": 200,
-    "learning_rate": 0.1,
-    "max_depth": None,
-    "random_state": RANDOM_STATE,
-}
+TIPOS_NAIVE = {"lag_salidas_1h": "naive_persistencia", "lag_salidas_168h": "naive_estacional"}
 
 
 def metricas_regresion(y_true, y_pred) -> dict:
@@ -94,7 +95,8 @@ def ejecutar_run(nombre_run, tipo_modelo, train, test, params_base, modelo=None,
         print(f"{nombre_run}: {metricas}")
 
 
-def main():
+def cargar_datos():
+    """Devuelve ``(train, test)`` con la partición temporal de ``config.FECHA_INICIO_TEST``."""
     ruta = PROCESSED_DATA_DIR / "features_demanda_p1.parquet"
     if not ruta.exists():
         raise FileNotFoundError(f"Primero corre src.dataset y src.features para generar {ruta}")
@@ -102,18 +104,32 @@ def main():
 
     df = pd.read_parquet(ruta)
     corte = pd.Timestamp(FECHA_INICIO_TEST)
-    train = df[df["timestamp_hora"] < corte]
-    test = df[df["timestamp_hora"] >= corte]
+    return df[df["timestamp_hora"] < corte], df[df["timestamp_hora"] >= corte]
 
+
+def entrenar(modelo: str, hiperparams: dict, datos, params_base: dict) -> None:
+    """Registra un run de P1; ``modelo`` es una clave de ``HIPERPARAMS_POR_DEFECTO["p1"]``."""
+    train, test = datos
+    if modelo == "naive":
+        columna = hiperparams["columna_naive"]
+        ejecutar_run(f"P1-baseline-naive-{columna.removeprefix('lag_salidas_')}",
+                     TIPOS_NAIVE.get(columna, "naive"), train, test, params_base,
+                     columna_naive=columna)
+    else:
+        ejecutar_run("P1-baseline-histgb", "HistGradientBoostingRegressor", train, test,
+                     params_base,
+                     modelo=HistGradientBoostingRegressor(**hiperparams, random_state=RANDOM_STATE))
+
+
+def main():
+    datos = cargar_datos()
     configurar_experimento()
     params_base = params_reproducibilidad()
 
-    ejecutar_run("P1-baseline-naive-lag1h", "naive_persistencia", train, test, params_base,
-                 columna_naive="lag_salidas_1h")
-    ejecutar_run("P1-baseline-naive-estacional-168h", "naive_estacional", train, test, params_base,
-                 columna_naive="lag_salidas_168h")
-    ejecutar_run("P1-baseline-histgb-regressor", "HistGradientBoostingRegressor", train, test,
-                 params_base, modelo=HistGradientBoostingRegressor(**HIPERPARAMS_HGB))
+    defaults = HIPERPARAMS_POR_DEFECTO["p1"]
+    entrenar("naive", {"columna_naive": "lag_salidas_1h"}, datos, params_base)
+    entrenar("naive", defaults["naive"], datos, params_base)
+    entrenar("histgb", defaults["histgb"], datos, params_base)
 
 
 if __name__ == "__main__":
